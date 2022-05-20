@@ -18,6 +18,9 @@ permissions:
 jobs:
   deploy:
 
+    environment: 
+      name: PyPI
+      url: https://pypi.org/project/gitparent
     runs-on: ubuntu-latest
 
     steps:
