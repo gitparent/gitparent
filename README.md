@@ -16,7 +16,7 @@ pip install .
 
 After installation, you can run the utility by using the `gitp` command. 
 
-Python 3.9+ and [pyyaml](https://github.com/yaml/pyyaml) are required.
+Python 3.9+, [pyyaml](https://github.com/yaml/pyyaml), and [filelock](https://github.com/tox-dev/py-filelock) are required.
 
 # About
 

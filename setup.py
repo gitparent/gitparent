@@ -1,5 +1,5 @@
 
-VERSION=20220520
+VERSION=20220531
 
 import setuptools
 try:
@@ -27,7 +27,8 @@ setuptools.setup(
     packages=setuptools.find_packages(where="."),
     python_requires=">=3.9",
     install_requires = [
-        "PyYAML==5.4.1",
+        "PyYAML>=5.4.1",
+        "filelock>=3.0.12",
     ],
     entry_points = {
         'console_scripts': [ 'gitp = gitparent.gitp:main' ]
