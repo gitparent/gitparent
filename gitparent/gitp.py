@@ -541,6 +541,7 @@ def check_for_state_match(root:str, recurse:bool=True, filter_type:typing.Union[
             continue
         decendent_repo_path = os.path.join(root, child)
         state = None
+        curr_tags = []
         curr_branch = None
         curr_commit = None
         curr_link = None
@@ -563,17 +564,15 @@ def check_for_state_match(root:str, recurse:bool=True, filter_type:typing.Union[
                 state = RepoState.NONEXISTENT
             #Cloned, but commit or branch is mismatched
             else:
-                try:
-                    curr_branch = get_current_branch(decendent_repo_path)
-                except:
-                    pass
-                curr_commit = get_current_commit(decendent_repo_path)
                 exp_commit = child_info.commit
                 exp_branch = None if exp_commit else child_info.branch
-                if (exp_branch is not None and curr_branch != exp_branch) or (exp_commit is not None and not curr_commit.startswith(exp_commit)):
+                curr_branch = get_current_branch(decendent_repo_path)
+                curr_tags = get_current_tags(decendent_repo_path)
+                curr_commit = get_current_commit(decendent_repo_path)
+                if (exp_branch is not None and ((exp_branch not in curr_tags) and (curr_branch != exp_branch))) or (exp_commit is not None and not curr_commit.startswith(exp_commit)):
                     state = RepoState.UNALIGNED
         if state is not None and (not filter_type or state in filter_type):
-            ans[os.path.join(pfx, child) if pfx else child] = (curr_branch, curr_commit, curr_link, state)
+            ans[os.path.join(pfx, child) if pfx else child] = (curr_tags[0] if curr_tags else curr_branch, curr_commit, curr_link, state)
         if recurse:
             check_for_state_match(decendent_repo_path, filter_type=filter_type, ans=ans, pfx=child)
     return ans
@@ -648,6 +647,19 @@ def get_current_branch(root:str) -> str:
     '''
     try: return _git('symbolic-ref -q HEAD', root).rsplit('/', 1)[-1].strip()
     except: return ''
+
+def get_current_tags(root:str) -> typing.List[str]:
+    '''
+    Returns a list of the tags at the current HEAD of the provided repo.
+
+    Args:
+        root: path of repo to check
+    
+    Returns:
+        List of tags on the current HEAD.
+    '''
+    try: return [x.strip() for x in _git('tag --points-at HEAD', root).split()]
+    except: return []
 
 def get_current_commit(root:str) -> str:
     '''
