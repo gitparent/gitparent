@@ -8,7 +8,7 @@ See https://github.com/gitparent/gitparent for more information.
 '''
 
 #ANCHOR: Native Dependencies
-import os, sys, fcntl, time, argparse, subprocess, shutil, enum, re, glob, shlex, datetime, socket, threading, functools, typing
+import os, sys, time, argparse, subprocess, shutil, enum, re, glob, shlex, datetime, socket, threading, functools, typing
 from subprocess import Popen, PIPE, STDOUT
 from filelock import FileLock
 
@@ -288,7 +288,7 @@ def get_repo_root(cwd:str=''):
         Absoluite path to the root of the git repo associated with `cwd`
     '''
     try: 
-        return _git('rev-parse --show-toplevel', cwd).strip()
+        return _git('rev-parse --show-toplevel', cwd).strip().replace('/', os.sep) #git always returns paths with linux-like '/' separators -- replace it for windows
     except: 
         raise Exception(f'Current directory ({os.path.abspath(cwd)}) is not a git repo.')
 
@@ -329,6 +329,7 @@ def _exec(cmd:typing.List[str], cwd:str=None, interactive:bool=False, out_post_p
     #Babysit interactive command
     #FIXME: doesn't seem to work with interactive text editors
     if interactive:
+        import fcntl #NOTE: this is not available in Windows
         with Popen(cmd, cwd=cwd, stdin=sys.stdin, stdout=PIPE if out_post_process else sys.stdout, stderr=STDOUT) as p:
             ans = ''
             #STDOUT is piped -- handle output manually
@@ -496,7 +497,7 @@ def check_for_changes(root:str, recurse:bool=True, ignore_committed:bool=False, 
             except: cnt = 0 #branch doesn't exist in remote
             if cnt > commit_cnt:
                 commit_cnt = cnt
-        if f'{remote}/{curr_branch}' not in _git('branch -r') and ignore_local_branches:
+        if not remotes or f'{remote}/{curr_branch}' not in _git('branch -r') and ignore_local_branches:
             pass
         else:
             ans.append((root, commit_cnt))
@@ -693,6 +694,10 @@ def get_remotes(root:str) -> typing.Dict[str, str]:
             if name not in ans:
                 ans[name] = {'fetch': None, 'push': None}
             ans[name][type[1:-1]] = url
+        #This is a bare repo -- return the absolute path to it
+        if not ans:
+            abs_root = os.path.abspath(root).replace('\\', '/')
+            return {'origin': {'fetch': abs_root, 'push': abs_root}}
         return ans
     except subprocess.CalledProcessError as e:
         raise Exception(f"Unable to obtain remote information for {root} due to the following reason(s):\n{e.output.decode('utf-8')}")
