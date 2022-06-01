@@ -807,16 +807,20 @@ def gitignore_add(root:str, token:str, check_exists:bool=False):
         root: directory containing .gitignore
         token: token to add
         check_exists: check if token already exists and skip adding it of it does
+
+    Returns:
+        `True` if added, `False` if `token` already existed.
     '''
     gitignore_path = os.path.relpath(os.path.join(root, '.gitignore'), os.getcwd())
     if check_exists:
         with open(gitignore_path, 'r') as f:
             for line in f.readlines():
                 if line.strip() == token:
-                    return 
+                    return False
     debug(f"Updating {gitignore_path}")
     with open(gitignore_path, 'a') as f:
         f.write('\n' + token)
+    return True
 
 def gitignore_rm(root:str, token:str):
     '''
@@ -1141,7 +1145,8 @@ def stash(args, unknowns=None):
         return ans
            
     #Create/register .gitp_stashes file if it doesn't exist
-    gitignore_add(root, '.gitp_stashes', check_exists=True)
+    if gitignore_add(root, '.gitp_stashes', check_exists=True):
+        raise Exception(f"This seems to be the first time you've stashed in this repo. Please commit the `.gitignore` file now and try again.")
     if not os.path.isfile(stashes_file):
         with open(stashes_file, 'w') as f:
             f.write('')
