@@ -1490,7 +1490,7 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
 
             #Execute user-specified commands after children are resolved
             if not skip:
-                cmds = m.post_pull if operation == 'Cloning' else m.post_clone
+                cmds = m.post_clone if operation == 'Cloning' else m.post_pull
                 for cmd in cmds:
                     out = _exec(shlex.split(cmd), cwd=dst).strip()
                     debug(style(cmd_indenter(out), Style.GRAY, force=True))
