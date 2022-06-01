@@ -563,6 +563,10 @@ def check_for_state_match(root:str, recurse:bool=True, filter_type:typing.Union[
                 state = RepoState.NONEXISTENT
             elif len(os.listdir(decendent_repo_path)) == 0:
                 state = RepoState.NONEXISTENT
+            #Not a git repo
+            elif not os.path.isdir(os.path.join(decendent_repo_path, '.git')):
+                state = RepoState.UNALIGNED
+                curr_branch = curr_commit = "<not a repo>"
             #Cloned, but commit or branch is mismatched
             else:
                 exp_commit = child_info.commit
@@ -2237,10 +2241,17 @@ def sync(args, unknowns=None):
             #Sync only if it is unaligned (and not overridden w/ an overlay)
             if child_qualified in mismatches and os.path.abspath(child_qualified) not in overlays:
                 state = mismatches[child_qualified][-1]
+                #Something that is not a repo is sitting the child's place
+                if mismatches[child_qualified][0] == '<not a repo>':
+                    if args.force:
+                        state = RepoState.NONEXISTENT
+                        shutil.rmtree(child_qualified)
+                    else:
+                        raise Exception(f"Cannot sync repo {child_qualified} due to the presence of pre-existing files (specify --force to ignore)")
                 #Child doesn't exist -- pull it
                 if state == RepoState.NONEXISTENT and not parent_m[child].link:
                     debug(f'{indent}Syncing {style(tgt, Style.BOLD)} (cloning)')
-                    sys.argv = [old_argv[0], '--target', child]
+                    sys.argv = [old_argv[0], '--target', child_qualified]
                     pull(root=repo_root, standalone=False, utility_cmd_level=level)
                     sys.argv = old_argv
                 #Child exists but isn't aligned; align it
@@ -2267,7 +2278,7 @@ def sync(args, unknowns=None):
                             out = _git(f'checkout {parent_m[child].commit or parent_m[child].branch}', tgt).strip()
                             debug(style(cmd_indenter(out), Style.GRAY, force=True))
                         except subprocess.CalledProcessError as e:
-                            raise Exception(f"Failed to add child repo {args.dst} for the following reason(s):\n{e.output.decode('utf-8').strip()}")
+                            raise Exception(f"Failed to add child repo {child} for the following reason(s):\n{e.output.decode('utf-8').strip()}")
                 else:
                     debug(f'{indent}Syncing {style(tgt, Style.BOLD)}')
             else:
