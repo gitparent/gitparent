@@ -72,7 +72,7 @@ class Manifest:
         def __eq__(self, other):
             if not isinstance(other, Manifest.Repo):
                 raise Exception(f"Equivalence operation between {type(self)} and {type(other)} is unsupported")
-            return True if self.url == other.url and (self.branch == other.branch or (self.commit and (self.commit == other.commit))) and self.link == other.link and self.type == other.type else False
+            return True if set(self.url).intersection(set(other.url)) and (self.branch == other.branch or (self.commit and (self.commit == other.commit))) and self.link == other.link and self.type == other.type else False
 
     def __init__(self, name:str, path:str=None, raw:typing.Union[dict,str]=None):
         '''
@@ -195,6 +195,8 @@ class Manifest:
                         raise Exception(f"Unexpected hash keys detected within definition of {child}: {mystery_keys}")
                     if not new_entry.url and new_entry.type == 'repo':
                         raise Exception(f"Missing required key 'url' within definition of {child}")
+                    if new_entry.url and not isinstance(new_entry.url, list): #can be a single url -- convert it into a single element list for uniformity
+                        new_entry.url = [new_entry.url]
 
 
 #ANCHOR: Utility Methods
@@ -1013,7 +1015,7 @@ def remote(args, unknowns=None):
         if m:
             child = os.path.relpath(root, os.path.dirname(m.path))
             if child in m:
-                m[child].url = unknowns[-1]
+                m[child].url[0] = unknowns[-1]
                 m.write()
 
 
@@ -1352,12 +1354,12 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
         #Basic dst repo info
         relpath     = os.path.relpath(dst, os.getcwd())
         label       = os.path.basename(dst) if top_root == dst else relpath
-        url         = pm[name].url if pm is not None else list(get_remotes(dst).values())[0]['fetch']
+        m_urls      = pm[name].url if pm is not None else list(get_remotes(dst).values())[0]['fetch']
         branch      = pm[name].branch if pm is not None else get_current_branch(dst)
         commit      = pm[name].commit if pm is not None else ''
         link        = pm[name].link if pm is not None else ''
-        clone_src   = url
-        pull_src    = ''
+        clone_srcs  = m_urls
+        pull_src   = ''
 
         #Don't bother syncing repos that are going to get overlayed
         if dst in overlay_entries and not args.local:
@@ -1383,7 +1385,8 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
             #Point source of operation to src repo if one is supplied
             if src is not None:
                 #Even if the source repo state is invalid, we can pull from the aligned branch that we care about (and we always do this for links)
-                pull_src = clone_src = os.path.relpath(os.path.abspath(src), os.path.abspath(relpath)) if not os.path.isabs(src) else src
+                clone_srcs = [os.path.relpath(os.path.abspath(src), os.path.abspath(relpath)) if not os.path.isabs(src) else src]
+                pull_src = clone_srcs[0]
             forced_msg = ''
             cleanup_dir = True if not os.path.isdir(dst) else False
             
@@ -1450,11 +1453,23 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
                             error(cmd_indenter(out))
 
                     elif operation == 'Cloning':
-                        out = _git(f'clone {clone_src} .', dst).strip()
-                        debug(style(cmd_indenter(out), Style.GRAY, force=True))
-                        #Clean up remote URL(s) (FIXME: this diverges from the normal git behavior -- is it ok?)
-                        if url != clone_src:
-                            remotes = get_remotes(src)
+                        #Try to clone until we hit a URL that works
+                        for i,clone_src in enumerate(clone_srcs):
+                            try:
+                                if i:
+                                    debug(f"Trying Backup URL ({i}): {clone_src}")
+                                out = _git(f'clone {clone_src} .', dst).strip()
+                                debug(style(cmd_indenter(out), Style.GRAY, force=True))
+                            except subprocess.CalledProcessError as e:
+                                out = e.output.decode('utf-8').strip()
+                                err_msg = f"Failed to clone from {clone_src}: {out}"
+                                if i == len(clone_srcs):
+                                    error(cmd_indenter(err_msg))
+                                else:
+                                    debug(style(cmd_indenter('WARNING: ' + err_msg), Style.YELLOW, force=True))
+                        #Clean up remote URL(s) after cloning of child repos (FIXME: this diverges from the normal git behavior -- is it ok?)
+                        if src is not None and clone_srcs[0] not in m_urls:
+                            remotes = get_remotes(src) #use the remotes set in the src of the clone
                             for remote,urls in remotes.items():
                                 try: 
                                     _git(f'remote set-url {remote} {urls["fetch"]}', dst)
