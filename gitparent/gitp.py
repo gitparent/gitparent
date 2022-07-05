@@ -201,10 +201,12 @@ class Manifest:
 def gitp_operation(f):
     ''' Decorator for all command-line operations of `gitp`. Handles argument parsing and debug message verbosity. '''
     PARSERS[f.__name__] = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter, prog=f'{os.path.basename(__file__)} {f.__name__}', add_help=True)
-    def wrapper(*argv, **kwargs):
+    def wrapper(cli_args, *argv, **kwargs):
         preprocess_method = getattr(PARSERS[f.__name__], '_preprocess_method', None)
         if preprocess_method:
-            preprocess_method(PARSERS[f.__name__])
+            preprocess_method(PARSERS[f.__name__], cli_args)
+        orig_argv = sys.argv
+        sys.argv = [__file__] + cli_args
         my_args, unknowns = PARSERS[f.__name__].parse_known_args()
         global DEBUG_LEVEL
         global FORCE_COLORS
@@ -213,7 +215,9 @@ def gitp_operation(f):
         if my_args.color != False:
             FORCE_COLORS = my_args.color
         sys.argv = [sys.argv[0], '-v', str(DEBUG_LEVEL), '--color', str(FORCE_COLORS)]
-        return f(my_args, unknowns, *argv, **kwargs)
+        ans = f(my_args, unknowns, *argv, **kwargs)
+        sys.argv = orig_argv
+        return ans
     wrapper.__doc__ = f.__doc__
     return wrapper
 
@@ -914,14 +918,15 @@ def obtain_server_lock(host_info:typing.Tuple[str,int], func:typing.Callable):
         CLI_RETURN_CODE = 1
         return
 
-def quote_exec_cmd(parser:argparse.ArgumentParser):
+def quote_exec_cmd(parser:argparse.ArgumentParser, cli_args):
     '''
     Argparse utility to quote the command specified to avoid argparse confusion, separate the gitp options out.
 
     Args:
         parser: argparse parser object to modify
+        cli_args: argv args as seen by the command
     '''
-    args = sys.argv[1:]
+    args = cli_args[1:]
     plain_args = []
     operation_opts = []
     i = 0
@@ -940,7 +945,7 @@ def quote_exec_cmd(parser:argparse.ArgumentParser):
         i += 1
     args = ' '.join(plain_args)
     args = [args] if args else []
-    sys.argv = [sys.argv[0]] + operation_opts + args
+    cli_args = [cli_args[0]] + operation_opts + args
 
 
 '''
@@ -1020,24 +1025,18 @@ def remote(args, unknowns=None):
 #ANCHOR: fetch()
 @gitp_operation
 def fetch(args, unknowns=None):
-    orig_argv = sys.argv
-    sys.argv = [sys.argv[0], ('git fetch ' + args_to_str(unknowns)).strip()]
     m = get_manifest(get_repo_root(os.getcwd()), create=False)
     w = functools.partial(exec, force_color=True)
     if m and m.lock_server:
         obtain_server_lock(m.lock_server, w)
     else:
-        w()
-    sys.argv = orig_argv
+        w([('git fetch ' + args_to_str(unknowns)).strip()])
 
 
 #ANCHOR: show()
 @gitp_operation
 def show(args, unknowns=None):
-    orig_argv = sys.argv
-    sys.argv = [sys.argv[0], ('git show ' + args_to_str(unknowns)).strip()]
-    exec()
-    sys.argv = orig_argv
+    exec([('git show ' + args_to_str(unknowns)).strip()])
 
 
 #ANCHOR: stash()
@@ -1268,10 +1267,7 @@ def reset(args, unknowns=None):
 def tag(args, unknowns=None):
     if '-a' in unknowns and '-m' not in unknowns:
         raise Exception(f'Must specify -m with -a (cannot execute interactive command)')
-    orig_argv = sys.argv
-    sys.argv = [sys.argv[0], ('git tag ' + args_to_str(unknowns)).strip()]
-    exec()
-    sys.argv = orig_argv
+    exec([('git tag ' + args_to_str(unknowns)).strip()])
 
 
 #ANCHOR: branch()
@@ -1281,10 +1277,7 @@ def branch(args, unknowns=None):
         raise Exception("Cannot run with --edit-description interactive option") #FIXME: should this be supported?
 
     #Simply run branch commands recursively
-    orig_argv = sys.argv
-    sys.argv = [sys.argv[0], ('git branch ' + args_to_str(unknowns)).strip()]
-    exec()
-    sys.argv = orig_argv
+    exec([('git branch ' + args_to_str(unknowns)).strip()])
 
 
 #ANCHOR: commit()
@@ -1298,7 +1291,7 @@ def commit(args, unknowns=None):
         cmd_indenter = get_cmd_indenter(level + 2)
 
         #Only commit if there are locally staged changes
-        out = _git('diff --cached', root).strip()
+        out = _git('diff --cached', root).strip() if os.path.isdir(root) else None
         if out:
             debug(f"{indent}Committing changes in {style(os.path.relpath(root, os.getcwd()), Style.BOLD)}")
             try:
@@ -1553,16 +1546,15 @@ def clone(args, unknowns=None):
         raise Exception(e.output.decode('utf-8').strip()) from None
 
     #Perform gitp pull on top level to get the rest
-    old_argv = sys.argv
+    cli_args = []
     if os.path.isdir(args.src): 
-        try: #Only specify src if we know it is another norhelpmal git repo
+        try: #Only specify src if we know it is another normal git repo
             if _git('rev-parse --is-bare-repository', args.src).strip() == 'false':
-                sys.argv.append(args.src)
+                cli_args.append(args.src)
         except:
             pass
-    sys.argv.append('--force')
-    pull(root=dest_path, standalone=False)
-    sys.argv = old_argv
+    cli_args.append('--force')
+    pull(cli_args, root=dest_path, standalone=False)
     debug(f'\nSuccessfully cloned to {os.path.abspath(dest_path)}.')
 
 PARSERS['clone'].add_argument('src', metavar='src', type=str, help='Parent repo to clone')
@@ -1659,9 +1651,7 @@ def checkout(args, unknowns=None):
 
         #If not a new branch, re-sync children
         if not new_branch:
-            if args.force:
-                sys.argv.insert(0, '--force')
-            sync()
+            sync(['--force'] if args.force else [])
 
     #WORK: Checkout specific file(s)
     else:
@@ -1682,22 +1672,16 @@ def checkout(args, unknowns=None):
                 new_child_info = alt_m[child.rstrip(os.sep)]
                 m[child.rstrip(os.sep)] = new_child_info
                 children_to_sync.append(normalized_child)
-                try: sys.argv.remove(child)
-                except: pass
-                try: ref_files.remove(child)
-                except: pass
                 maybe_children.remove(child)
             
         #Sync new children states
-        old_argv = sys.argv
         if children_to_sync:
             m.write()
-            sys.argv = [sys.argv[0]]
+            cli_args = []
             if args.force:
-                sys.argv.append('--force')
-            sys.argv += children_to_sync
-            sync()
-        sys.argv = old_argv
+                cli_args.append('--force')
+            cli_args += children_to_sync
+            sync(cli_args)
     
         #Nothing left to checkout, exit
         if not maybe_children:
@@ -1819,10 +1803,7 @@ def add(args, unknowns=None):
             raise Exception(e.output.decode('utf-8').strip())
     #If nothing specified, run command recursively on everything (e.g. for git -A, etc)
     if not args.tgt:
-        orig_argv = sys.argv
-        sys.argv = [sys.argv[0], ('git add ' + args_to_str(unknowns)).strip()]
-        exec()
-        sys.argv = orig_argv
+        exec([('git add ' + args_to_str(unknowns)).strip()])
 PARSERS['add'].add_argument('tgt', metavar='tgt', type=str, nargs='*', help='Files or directories to add')
 
 
@@ -2235,7 +2216,6 @@ def sync(args, unknowns=None):
         indent      = ''.join([' ' for _ in range(level)]) + '∟ ' if level else ''
         cmd_indenter = get_cmd_indenter(level + 2)
 
-        old_argv = sys.argv
         #Sync each target (don't touch linked repos that are cloned locally)
         for tgt in tgts:
             parent_m = get_parent_manifest(tgt)
@@ -2256,9 +2236,7 @@ def sync(args, unknowns=None):
                 #Child doesn't exist -- pull it
                 if state == RepoState.NONEXISTENT and not parent_m[child].link:
                     debug(f'{indent}Syncing {style(tgt, Style.BOLD)} (cloning)')
-                    sys.argv = [old_argv[0], '--target', child_qualified]
-                    pull(root=repo_root, standalone=False, utility_cmd_level=level)
-                    sys.argv = old_argv
+                    pull(['--target', child_qualified], root=repo_root, standalone=False, utility_cmd_level=level)
                 #Child exists but isn't aligned; align it
                 elif state == RepoState.UNALIGNED or parent_m[child].link:
                     #Relink
@@ -2352,7 +2330,7 @@ def new(args, unknowns=None):
 
     #First time -- init the repo
     if m is None:
-        pull()
+        pull([])
     m = get_manifest(root)
     
     #Handle case wherein a child repo is added from a grandparent or greater
@@ -2392,13 +2370,9 @@ def new(args, unknowns=None):
 
     #Clone the new repo recursively, back out change if something fails
     try: 
-        sys.argv = [sys.argv[0], '--target', new_child + os.sep]
-        pull(root=root, standalone=False)
+        pull(['--target', new_child + os.sep], root=root, standalone=False)
     except subprocess.CalledProcessError as e:
-        sys.argv.append(args.dst)
-        if args.force:
-            sys.argv.append('--force') 
-        rm()
+        rm([args.dst, '--force'] if args.force else [args.dst])
         raise Exception(f"Failed to add child repo '{args.dst}' for the following reason(s):\n{e.output.decode('utf-8')}")
     debug(style(f"Added child repo {style(args.dst, Style.BOLD)}", []))
 
@@ -2486,10 +2460,7 @@ def link(args, unknowns=None):
         shutil.rmtree(args.tgt)
     elif os.path.islink(args.tgt):
         os.unlink(args.tgt)
-    old_argv = sys.argv
-    sys.argv = [sys.argv[0], args.tgt]
-    sync()
-    sys.argv = old_argv
+    sync([args.tgt])
 
     sfx = '' if not args.link_newest else 'last modified subdir'
     if args.link_filter:
@@ -2543,10 +2514,7 @@ def unlink(args, unknowns=None):
     #If link exists, replace it with cloned copy (or another link if we are remove an overlay from a linked repo)
     if os.path.islink(args.tgt):
         os.unlink(args.tgt)
-        old_argv = sys.argv
-        sys.argv = [sys.argv[0], args.tgt]
-        sync()
-        sys.argv = old_argv
+        sync([args.tgt])
 
     if args.link_overlay:
         debug(f"Removed overlay from {args.tgt}")
@@ -2719,7 +2687,7 @@ def main():
     #Intercept the git command with the gitp implementation
     if cmd in PARSERS:
         try:
-            getattr(sys.modules[__name__], cmd)()
+            getattr(sys.modules[__name__], cmd)(sys.argv[1:])
         except Exception as e:
             if DEBUG_LEVEL:
                 raise
