@@ -28,6 +28,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install flake8 pytest
         python -m pip install .
+        
     - name: Test with pytest
       run: |
+        git config --global user.email "github@example.com"
+        git config --global user.name "Github Action"
         pytest
