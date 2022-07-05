@@ -1483,8 +1483,15 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
             if not link:
                 #Do this work recursively (but don't recurse into linked repos or in the case of a repo to repo pull, source repos that are not manifest-aligned)
                 for child in m:
-                    new_src = os.path.join(src, child) if src is not None else src
-                    work(src=new_src, dst=os.path.join(dst, child), parent_path=dst, pm=m, name=child, tgt=tgt, level=level+2 if not skip else level)
+                    new_dst = os.path.join(dst, child)
+                    if src is not None:
+                        new_src = os.path.join(src, child)
+                        if not os.path.isdir(new_src):
+                            debug(f"  {indent}Skipping {style(os.path.relpath(new_dst), Style.BOLD)} (source {new_src} not present)")
+                            continue
+                    else:
+                        new_src = src
+                    work(src=new_src, dst=new_dst, parent_path=dst, pm=m, name=child, tgt=tgt, level=level+2 if not skip else level)
 
             #Execute user-specified commands after children are resolved
             if not skip:
