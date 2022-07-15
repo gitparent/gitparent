@@ -10,35 +10,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import utils
 from gitparent import cli
 
-
-def cleanup(f):
-    def wrap(*args, **kwargs):
-        cwd = os.getcwd()
-        if os.path.exists('.dut_remotes'):
-            shutil.rmtree('.dut_remotes')
-        if os.path.exists('.dut_local'):
-            for x in glob.glob('.dut_local*'):
-                shutil.rmtree(x)
-        ans = f('.dut_local', *args, **kwargs)
-        os.chdir(cwd)
-        return ans
-    return wrap
-
-def init_remote(path):
-    utils.create_remote(f'.dut_remotes/{path}')
-    utils.create_file(f'.dut_remotes/{path}/file1')
-    utils.create_file(f'.dut_remotes/{path}/file2')
-    utils.create_file(f'.dut_remotes/{path}/file3')
-    utils.create_file(f'.dut_remotes/{path}/subdir/file_a')
-    utils.create_file(f'.dut_remotes/{path}/subdir/file_b')
-    return os.path.abspath(f'.dut_remotes/{path}')
-
-@cleanup
+@utils.set_workarea()
 def test_basic(p):
     ''' Basic clone of remote and child repo creation. '''
-    top = init_remote('top')
-    child = init_remote('child')
-    gchild = init_remote('gchild')
+    top = utils.init_simple_remote('top')
+    child = utils.init_simple_remote('child')
+    gchild = utils.init_simple_remote('gchild')
     cli.clone([top, p])
     os.chdir(p)
     with pytest.raises(Exception): #no relative paths allowed
@@ -52,7 +29,7 @@ def test_basic(p):
     cli.commit(['-m', 'hello world'])
     cli.status([])
 
-@cleanup
+@utils.set_workarea()
 def test_local_clone(p):
     ''' Clone copy of remote. ''' 
     test_basic()
@@ -60,7 +37,7 @@ def test_local_clone(p):
     os.chdir(p + '.copy')
     cli.status([])
 
-@cleanup
+@utils.set_workarea()
 def test_partial_local_clone(p):
     ''' Clone copy of remote that is partially missing. '''
     test_basic()

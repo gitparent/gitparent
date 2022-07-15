@@ -783,6 +783,7 @@ def apply_overlays(root:str, overlay_entries:typing.Dict[str, Manifest.Repo], ta
         #Check if target of overlay exists and has local changes
         if is_real_dir(relpath) and check_for_changes(relpath) and not force:
             raise Exception(f"Failed to apply overlay on top of {relpath} due to there being local changes present (push or specify --force to permenantly clobber)")
+        assert os.path.isdir(relpath), os.path.abspath(relpath)
         if _git('stash list', relpath) and not force:
             raise Exception(f"Failed to apply overlay on top of {relpath} due to there being locally stashed changes present (push or specify --force to permenantly clobber)")
         if os.path.islink(relpath):
@@ -2341,22 +2342,21 @@ def new(args, unknowns=None):
     m = get_manifest(root)
     
     #Handle case wherein a child repo is added from a grandparent or greater
-    starting = os.path.join(args.dst, '')
-    dst_part = os.path.relpath(os.path.split(starting)[0], root) #handle absolute paths
+    dst_part = os.path.relpath(os.path.join(args.dst, ''), root) #handle absolute paths
+    root_pfx = root
+    #Iterate down the dir hierarchy and associate this new repo with the lowest gitp parent repo (if just a repo and not a gitp parent, e.g. no .gitp_manifest, then add it to the top level, even if it falls within another repo)
     while dst_part != '':
-        #This is a child repo -- make sure that we create a manifest for it if it doesn't exist
-        create = True if dst_part in m else False
-        child_m = get_manifest(os.path.join(root, dst_part), create=create)
+        child_m = get_manifest(root_pfx, create=False)
         if child_m is not None:
-            #Check if any entries that fall under dst exist at this level, and if so, error out
-            conflicting_children = [x for x in child_m if x.startswith(os.path.dirname(dst_part))]
+            #Check if any entries that fall under dst exist at this level, and if so, error out (e.g. user is trying to add child repo which would encompass existing child repos)
+            conflicting_children = [os.path.relpath(os.path.join(root_pfx, x)) for x in child_m if x.startswith(dst_part + os.sep)]
             if conflicting_children:
-                raise Exception(f"Child repo {dst_part} contains children {', '.join(conflicting_children)} which conflict with adding new child '{args.dst}' (please manually reassign these repos to preserve hiearchy)") #FIXME: handle this for user via interactive prompt?
-            root = os.path.join(root, dst_part)
+                raise Exception(f"Child repo {os.path.join(os.path.relpath(root_pfx))} contains children {', '.join(conflicting_children)} which hierarchically conflict(s) with adding new child '{args.dst}' (please manually remove and add these repos to preserve hiearchy)") #FIXME: handle this for user via interactive prompt?
+            root = root_pfx
             new_child = os.path.relpath(args.dst, root)
             m = child_m
-            break
-        dst_part = os.path.split(dst_part)[0]
+        root_pfx = os.path.join(root_pfx, dst_part.split(os.sep,1)[0]) if os.sep in dst_part else os.path.join(root_pfx, dst_part)
+        dst_part = dst_part.split(os.sep, 1)[1] if os.sep in dst_part else ''
 
     #Don't modify contents accessed via links
     assert(not root.endswith(os.sep)) #FIXME REMOVE SANITY CHECK
@@ -2463,7 +2463,7 @@ def link(args, unknowns=None):
         m.write()
     
     #Replace any existing content w/ the new link
-    if is_real_dir(args.tgt):
+    if is_real_dir(args.tgt) and not args.link_overlay: #overlays deal with this removal separately within apply_overlays()
         shutil.rmtree(args.tgt)
     elif os.path.islink(args.tgt):
         os.unlink(args.tgt)
