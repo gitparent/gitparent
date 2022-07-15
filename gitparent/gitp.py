@@ -599,6 +599,7 @@ def check_for_overlay_state_match(tgt:str, overlays:typing.Dict[str, Manifest.Re
         Tuple of [0] `RepoState` enumeration based on the alignment between `tgt` and `overlays`, and [1] current link path of `tgt`, and [2] expected link path of `tgt`
     '''
     curr_link = None
+    link = None
     status = RepoState.CLEAN
     if is_real_dir(tgt):
         status = RepoState.UNLINKED
@@ -781,11 +782,11 @@ def apply_overlays(root:str, overlay_entries:typing.Dict[str, Manifest.Repo], ta
             link = os.path.relpath(os.path.join(root, link), os.path.dirname(relpath))
         debug(f"Applying overlay {style(child_info.link, Style.BOLD)} on top of {style(relpath, Style.BOLD)}")
         #Check if target of overlay exists and has local changes
-        if is_real_dir(relpath) and check_for_changes(relpath) and not force:
-            raise Exception(f"Failed to apply overlay on top of {relpath} due to there being local changes present (push or specify --force to permenantly clobber)")
-        assert os.path.isdir(relpath), os.path.abspath(relpath)
-        if _git('stash list', relpath) and not force:
-            raise Exception(f"Failed to apply overlay on top of {relpath} due to there being locally stashed changes present (push or specify --force to permenantly clobber)")
+        if is_real_dir(relpath): 
+            if check_for_changes(relpath) and not force:
+                raise Exception(f"Failed to apply overlay on top of {relpath} due to there being local changes present (push or specify --force to permenantly clobber)")
+            if _git('stash list', relpath) and not force:
+                raise Exception(f"Failed to apply overlay on top of {relpath} due to there being locally stashed changes present (push or specify --force to permenantly clobber)")
         if os.path.islink(relpath):
             os.unlink(relpath)
         elif os.path.isdir(relpath):
