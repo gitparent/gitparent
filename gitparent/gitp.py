@@ -66,13 +66,52 @@ class Manifest:
 
     class Repo:
         ''' Internal representation of a repo entry in a `.gitp_manifest` file. ''' 
+        _repo_attrs = ['url', 'username', 'password', 'branch', 'commit', 'link', 'link_newest', 'link_filter', 'type']
         def __init__(self):
-            self.url = self.branch = self.commit = self.link = self.link_newest = self.link_filter = self.type = None
+            self._parent_manifest = None
+            for attr in self._repo_attrs:
+                self.__dict__['_' + attr] = None
 
         def __eq__(self, other):
             if not isinstance(other, Manifest.Repo):
                 raise Exception(f"Equivalence operation between {type(self)} and {type(other)} is unsupported")
             return True if self.url == other.url and (self.branch == other.branch or (self.commit and (self.commit == other.commit))) and self.link == other.link and self.type == other.type else False
+        
+        def __setattr__(self, name, val):
+            ''' Intercept attribute assignments to update the shadow value '''
+            if name in self._repo_attrs:
+                name = '_' + name
+            self.__dict__[name] = val
+        
+        def __getattr__(self, name):
+            ''' Intercept attribute queries to retrieve the shadow value and interpolate any env vars '''
+            if name in self._repo_attrs:
+                orig_environ = os.environ
+                os.environ = {k:v or '' for k,v in self._parent_manifest.variables.items()}
+                os.environ.update(orig_environ)
+                ans = self.__dict__['_' + name]
+                if isinstance(ans, str):
+                    ans = os.path.expandvars(ans)
+                os.environ = orig_environ
+                return ans
+            else:
+                return self.__dict__[name]
+
+        @property
+        def full_url(self):
+            ''' Full URL of this repo with user/password information baked in, if any. '''
+            scheme,username,password,base_url = parse_url(self.url)
+            ans = scheme or ''
+            username = self.username or username
+            password = self.password or password
+            if username:
+                ans += username
+                if password:
+                    ans += ':' + password
+                ans += '@'
+            if base_url:
+                ans += base_url
+            return ans
 
     def __init__(self, name:str, path:str=None, raw:typing.Union[dict,str]=None):
         '''
@@ -87,6 +126,8 @@ class Manifest:
         ''' Path to the root of the gitp repo '''
         self.repos = {}
         ''' Child repo dictionary '''
+        self.variables = {}
+        ''' Environment variable interpolation overrides '''
         self.lock_server = None
         ''' Lock server address associated with this repo, if any '''
         self.post_clone = []
@@ -100,6 +141,7 @@ class Manifest:
 
     def __setitem__(self, key:str, item:'Manifest.Repo'):
         self.repos[key] = item
+        item._parent_manifest = self
 
     def __getitem__(self, key:str) -> 'Manifest.Repo':
         return self.repos[key]
@@ -133,7 +175,15 @@ class Manifest:
         ''' Convertor method to dict representation. '''
         ans = {'repos': {}}
         for child,child_info in self.repos.items():
-            ans['repos'][child] = {x:y for x,y in child_info.__dict__.items() if y is not None}
+            ans['repos'][child] = {k:getattr(child_info, '_' + k) for k in child_info._repo_attrs if getattr(child_info, k) is not None}
+        if self.lock_server:
+            ans['lock_server'] = self.lock_server
+        if self.post_clone:
+            ans['post_clone'] = self.post_clone
+        if self.post_pull:
+            ans['post_pull'] = self.post_pull
+        if self.variables:
+            ans['variables'] = self.variables
         return ans
 
     def write(self):
@@ -164,6 +214,7 @@ class Manifest:
         '''
         if isinstance(raw, str):
             raw = yaml.safe_load(raw)
+        #TODO: schema checking and error messaging for the following fields
         if 'lock_server' in raw and isinstance(raw['lock_server'], str):
             self.lock_server = raw['lock_server']
             m = re.search(r'^([^:]+):(\d+)$', self.lock_server.strip())
@@ -175,6 +226,8 @@ class Manifest:
             self.post_clone = raw['post_clone']
         if 'post_pull' in raw and isinstance(raw['post_pull'], list):
             self.post_pull = raw['post_pull']
+        if 'variables' in raw and isinstance(raw['variables'], dict):
+            self.variables = raw['variables']
         if 'repos' in raw and isinstance(raw['repos'], dict):
             for child,child_info in raw['repos'].items():
                 if child.endswith(os.sep):
@@ -183,14 +236,16 @@ class Manifest:
                     raise Exception(f"Found duplicate repo entry '{child}'")
                 new_entry = Manifest.Repo()
                 self.repos[child] = new_entry
-                for key in new_entry.__dict__:
+                new_entry._parent_manifest = self
+                for key in Manifest.Repo._repo_attrs:
+                    if key.startswith('_'): continue
                     default_val = None
                     if key == 'branch':
                         default_val = 'master'
                     elif key == 'type':
                         default_val = 'repo'
-                    new_entry.__dict__[key] = child_info.get(key, default_val)
-                    mystery_keys = set(child_info.keys()) - set(new_entry.__dict__.keys())
+                    setattr(new_entry, key, child_info.get(key, default_val))
+                    mystery_keys = set(child_info.keys()) - set(Manifest.Repo._repo_attrs)
                     if mystery_keys:
                         raise Exception(f"Unexpected hash keys detected within definition of {child}: {mystery_keys}")
                     if not new_entry.url and new_entry.type == 'repo':
@@ -409,6 +464,28 @@ def is_real_dir(path:str) -> bool:
     if os.path.islink(path):
         return False
     return True
+
+def parse_url(url:str) -> tuple:
+    '''
+    Parses a given URL string into components.
+
+    Args:
+        url: URL to parse
+
+    Returns:
+        A tuple containing [0] the URL scheme (if any), [1] username (if any), [2] password (if any), [3] the base URL
+    '''
+    if '@' in url:
+        m = re.search('^(\S+://)?(\S+)@(.*)', url)
+        scheme,username,base = m.groups()
+        password = None
+        if username is not None and ':' in username:
+            username,password = username.split(':', 1)
+        return (scheme, username, password, base)
+    else:
+        m = re.search('^(\S+://)?(.*)', url)
+        scheme,base = m.groups()
+        return (scheme, None, None, base)
 
 MANIFEST_CACHE = {}
 def get_manifest(root:str, create:bool=True)-> typing.Union[Manifest, None]:
@@ -1020,7 +1097,10 @@ def remote(args, unknowns=None):
         if m:
             child = os.path.relpath(root, os.path.dirname(m.path))
             if child in m:
-                m[child].url = unknowns[-1]
+                scheme,username,password,base_url = parse_url(unknowns[-1])
+                m[child].username = username
+                m[child].password = password
+                m[child].url = scheme + base_url if scheme is not None else base_url
                 m.write()
 
 
@@ -1347,7 +1427,7 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
         #Basic dst repo info
         relpath     = os.path.relpath(dst, os.getcwd())
         label       = os.path.basename(dst) if top_root == dst else relpath
-        url         = pm[name].url if pm is not None else list(get_remotes(dst).values())[0]['fetch']
+        url         = pm[name].full_url if pm is not None else list(get_remotes(dst).values())[0]['fetch']
         branch      = pm[name].branch if pm is not None else get_current_branch(dst)
         commit      = pm[name].commit if pm is not None else ''
         link        = pm[name].link if pm is not None else ''
@@ -1960,7 +2040,7 @@ def status(args, unknowns=None, print_msgs:bool=True):
         status_cnt[status] += 1
         url_info = ''
         if md:
-            url     = md.url
+            url     = md.full_url
             branch  = md.branch
             link    = md.link if status in [RepoState.CLEAN, RepoState.UNALIGNED] else ''
             commit  = md.commit or ''
@@ -2053,7 +2133,7 @@ def push(args, unknowns=None):
         if m:
             for child,child_info in m.items():
                 child_root = os.path.join(root, child)
-                work(child_root, name=child, url=child_info.url, branch=child_info.branch, level=level+2)
+                work(child_root, name=child, url=child_info.full_url, branch=child_info.branch, level=level+2)
         if check_for_changes(root, recurse=False, ignore_uncommitted=True):
             url_info = f'{url} ({branch})'
             debug(f' {indent} Pushing {style(repo_print_name, Style.BOLD)} to remote {style(url_info, Style.BLUE)}')
@@ -2371,7 +2451,10 @@ def new(args, unknowns=None):
     new_entry.link          = args.link
     new_entry.link_filter   = args.link_filter
     new_entry.link_newest   = args.link_newest
-    new_entry.url           = args.url
+    scheme,username,password,base_url = parse_url(args.url)
+    new_entry.username = username
+    new_entry.password = password
+    new_entry.url = scheme + base_url if scheme is not None else base_url
     m[new_child] = new_entry
     m.write()
     gitignore_add(root, new_child)

@@ -32,6 +32,8 @@ Why gitparent rather than meta or gitman? It boils down to preference, but here 
 - [Link "overlaying"](#Linking) to override shared repo dependencies (absent/lacking in meta and gitman)
 - Favors Python projects due to being written in Python (i.e. one less dependency; meta is written in nodeJS)
 
+Note that gitparent is intended for use with trusted repositories/secure environments only due to the ability for arbitrary code to be executed.
+
 # Purpose
 
 1. Support all work modes described in the table in the [Philosophy](#Philosophy) section.
@@ -85,24 +87,32 @@ If we were to create an overlay link for `grandchild_of_A` to some static path i
 The format of the `.gitp_manifest` file which stores gitparent state information is as follows:
 
 ```yaml
+variables:
+    SOME_VARIABLE: variable_default_value
+    #(more variables)
 repos:
     <path to instance of child repo>:
         url: <repo URL>
+        username: <optional username>
+        password: <optional password>
         branch: <branch or tag to track>
         commit: <commit SHA to track -- takes precedence over branch if both are specified>
         type: <repo|overlay>
-    <another path to a different child repo>:
-        ...
+    #(more repo entries)
 post_clone:
     - <first system command to execute upon doing a `gitp clone` on this repo>
     - <second system command "">
-        ...
+    #(more commands)
 post_pull:
     - <first system command to execute upon doing a `gitp pull` on this repo>
     - <second system command "">
-        ...
+    #(more commands)
 ```
 
-The commands listed under `post_clone` and `post_sync` are run in the order specified and in the root repo directory. As the names suggest, `post_clone` is triggered after a `gitp clone`, after the associated repo has been cloned (but not its children). Similarly, `post_pull` is triggered after all children of a given repo have been pulled via `gitp pull` (but before overlays are applied).
+The `variables` section specifies the default values of interpolated environment variables in the manifest. If the variable is not set, all mentions of said variable within the manifest file will use the supplied default value. If no default is supplied, the variable is interpreted as a literal string. Entries for this section and interpolation of said variables must be added by manually editing the manifest file.
+
+The `username` and `password` fields for each child repo entry are optional. If a username or username and password are already specified in the `url` of the repo, `username` and `password` will take precedence if specified/not empty. These fields are ignored if empty. Note that these are populated if the username/password are specified in the `url` (`--from` option of `gitp new`).
+
+The commands listed under `post_clone` and `post_sync` are run in the order specified and in the root repo directory. As the names suggest, `post_clone` is triggered after a `gitp clone`, after the associated repo has been cloned (but not its children). Similarly, `post_pull` is triggered after all children of a given repo have been pulled via `gitp pull` (but before overlays are applied). Entries to these sections must be added by manually editing the manifest file.
 
 The `GITP_PARENT_REPO` environment variable is set during `gitp pull` and `gitp clone` operations to communicate to any processes invoked via `post_clone` or `post_sync` whether or not the current repo is being consumed as a parent repo or as a child repo. This is useful if you wish to execute certain commands/run certain processes contingent on how the repo is being consumed.

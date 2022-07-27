@@ -1,5 +1,5 @@
 
-VERSION=20220715
+VERSION=20220727
 
 import setuptools
 try:
