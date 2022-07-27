@@ -109,7 +109,7 @@ post_pull:
     #(more commands)
 ```
 
-The `variables` section specifies the default values of interpolated environment variables in the manifest. If the variable is not set, all mentions of said variable within the manifest file will use the supplied default value. If no default is supplied, the variable is interpreted as a literal string. Entries for this section and interpolation of said variables must be added by manually editing the manifest file.
+The `variables` section specifies the default values of interpolated environment variables in the manifest. If the variable is not set in the user's environment, all mentions of said variable within the manifest file will use the supplied default value. If no default is supplied, the variable is interpreted as a literal string. Note that variables will only be expanded if they are explicitly listed in this section, otherwise the interpolated variables will be interpreted as literal strings. Entries for this section and interpolation of said variables must be added by manually editing the manifest file.
 
 The `username` and `password` fields for each child repo entry are optional. If a username or username and password are already specified in the `url` of the repo, `username` and `password` will take precedence if specified/not empty. These fields are ignored if empty. Note that these are populated if the username/password are specified in the `url` (`--from` option of `gitp new`).
 

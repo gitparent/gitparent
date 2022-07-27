@@ -87,8 +87,7 @@ class Manifest:
             ''' Intercept attribute queries to retrieve the shadow value and interpolate any env vars '''
             if name in self._repo_attrs:
                 orig_environ = os.environ
-                os.environ = {k:v or '' for k,v in self._parent_manifest.variables.items()}
-                os.environ.update(orig_environ)
+                os.environ = {k:orig_environ.get(k, v or '') for k,v in self._parent_manifest.variables.items()}
                 ans = self.__dict__['_' + name]
                 if isinstance(ans, str):
                     ans = os.path.expandvars(ans)
