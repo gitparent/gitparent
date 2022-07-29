@@ -2300,14 +2300,12 @@ def sync(args, unknowns=None):
     Synchronize a repo's state with its manifest.
     '''
     
-    def do_sync(tgts:typing.List[str], overlays:dict=None, mismatches:dict=None, top_root:str=None, level:int=0):
+    def do_sync(tgts:typing.List[str], parent_m:Manifest, overlays:dict=None, mismatches:dict=None, top_root:str=None, level:int=0):
         indent      = ''.join([' ' for _ in range(level)]) + '∟ ' if level else ''
         cmd_indenter = get_cmd_indenter(level + 2)
 
         #Sync each target (don't touch linked repos that are cloned locally)
         for tgt in tgts:
-            parent_m = get_parent_manifest(tgt)
-            m = get_manifest(tgt, create=False)
             repo_root = os.path.dirname(parent_m.path)
             child = os.path.abspath(tgt).replace(repo_root + os.sep, '', 1)
             child_qualified = os.path.abspath(tgt).replace(top_root + os.sep, '', 1)
@@ -2324,7 +2322,7 @@ def sync(args, unknowns=None):
                 #Child doesn't exist -- pull it
                 if state == RepoState.NONEXISTENT and not parent_m[child].link:
                     debug(f'{indent}Syncing {style(tgt, Style.BOLD)} (cloning)')
-                    pull(['--target', child_qualified], root=repo_root, standalone=False, utility_cmd_level=level)
+                    pull(['--target', child_qualified], standalone=False, utility_cmd_level=level)
                 #Child exists but isn't aligned; align it
                 elif state == RepoState.UNALIGNED or parent_m[child].link:
                     #Relink
@@ -2356,9 +2354,10 @@ def sync(args, unknowns=None):
                 debug(f'{indent}Syncing {style(tgt, Style.BOLD)}')
 
             #Recursively sync children
+            m = get_manifest(tgt, create=False)
             if m:
                 for gchild in m:
-                    do_sync([os.path.join(tgt, gchild)], overlays=overlays, mismatches=mismatches, top_root=top_root, level=level+2)
+                    do_sync([os.path.join(tgt, gchild)], parent_m=m, overlays=overlays, mismatches=mismatches, top_root=top_root, level=level+2)
 
     #If nothing is specified, target all children of repo in cwd
     repo_root = get_repo_root()
@@ -2381,7 +2380,7 @@ def sync(args, unknowns=None):
     overlays = m.get_overlays()
     if isinstance(args.tgt, str):
         args.tgt = [args.tgt]
-    do_sync(args.tgt, overlays=overlays, mismatches=mismatches, top_root=repo_root)
+    do_sync(args.tgt, parent_m=m, overlays=overlays, mismatches=mismatches, top_root=repo_root)
 
     #Apply overlays
     apply_overlays(repo_root, overlays, args.tgt, args.force)
