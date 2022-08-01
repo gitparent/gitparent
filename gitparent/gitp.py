@@ -87,7 +87,10 @@ class Manifest:
             ''' Intercept attribute queries to retrieve the shadow value and interpolate any env vars '''
             if name in self._repo_attrs:
                 orig_environ = os.environ
-                os.environ = {k:orig_environ.get(k, v or '') for k,v in self._parent_manifest.variables.items()}
+                if self._parent_manifest:
+                    os.environ = {k:orig_environ.get(k, v or '') for k,v in self._parent_manifest.variables.items()}
+                else:
+                    os.environ = {}
                 ans = self.__dict__['_' + name]
                 if isinstance(ans, str):
                     ans = os.path.expandvars(ans)
@@ -96,13 +99,57 @@ class Manifest:
             else:
                 return self.__dict__[name]
 
+        def set_url(self, url):
+            ''' Set the URL of this repo. '''
+            scheme,username,password,base_url,url_tgt = parse_url(url)
+            if password and scheme == 'ssh://':
+                raise Exception(f"Malformed remote URL '{url}' is an SSH URL that specifies a password")
+            delim = ':' if scheme == 'ssh://'  else '/'
+            self.username = username
+            self.password = password
+            if scheme == 'ssh://':
+                scheme = '' 
+            self.url = scheme + base_url + ((delim + url_tgt) if url_tgt else '') if scheme is not None else base_url
+
+        def get_url(self, scheme=None):
+            ''' Get URL with the specified scheme. If No scheme is specified, return the default URL. '''
+            default_scheme,username,password,base_url,url_tgt = parse_url(self.full_url)
+            if default_scheme is None or scheme is None:
+                return self.full_url
+            if scheme == 'ssh':
+                return self.ssh_url
+            if scheme == 'http':
+                return self.http_url
+            if scheme == 'https':
+                return self.https_url
+            raise Exception(f"Unsupported URL scheme '{scheme}' specified (must be ssh, http, or https)")
+
         @property
         def full_url(self):
             ''' Full URL of this repo with user/password information baked in, if any. '''
-            scheme,username,password,base_url = parse_url(self.url)
-            ans = scheme or ''
+            scheme,username,password,base_url,url_tgt = parse_url(self.url)
+            delim = ':' if scheme == 'ssh://'  else '/'
+            ans = '' if scheme == 'ssh://' else scheme or ''
             username = self.username or username
             password = self.password or password
+            if username:
+                ans += username
+                if password and scheme != 'ssh://': #ssh does not support inline password
+                    ans += ':' + password
+                ans += '@'
+            if base_url:
+                ans += base_url
+            if url_tgt:
+                ans += delim + url_tgt
+            return ans
+        
+        @property 
+        def http_url(self):
+            ''' The HTTP form of this repo's URL '''
+            scheme,username,password,base_url,url_tgt = parse_url(self.url)
+            username = self.username or username
+            password = self.password or password
+            ans = 'http://'
             if username:
                 ans += username
                 if password:
@@ -110,6 +157,28 @@ class Manifest:
                 ans += '@'
             if base_url:
                 ans += base_url
+            if url_tgt:
+                ans += '/' + url_tgt
+            return ans
+
+        @property 
+        def https_url(self):
+            ''' The HTTPS form of this repo's URL '''
+            return 'https' + self.http_url[4:]
+        
+        @property
+        def ssh_url(self):
+            ''' The SSH form of this repo's URL '''
+            scheme,username,password,base_url,url_tgt = parse_url(self.url)
+            username = self.username or username
+            password = self.password or password
+            ans = ''
+            if username:
+                ans += username + '@'
+            if base_url:
+                ans += base_url
+            if url_tgt:
+                ans += ':' + url_tgt            
             return ans
 
     def __init__(self, name:str, path:str=None, raw:typing.Union[dict,str]=None):
@@ -472,19 +541,27 @@ def parse_url(url:str) -> tuple:
         url: URL to parse
 
     Returns:
-        A tuple containing [0] the URL scheme (if any), [1] username (if any), [2] password (if any), [3] the base URL
+        A tuple containing [0] the URL scheme (if any), [1] username (if any), [2] password (if any), [3] network target, [4] target path/URL
     '''
+    scheme = username = password = base = tgt = None
     if '@' in url:
         m = re.search('^(\S+://)?(\S+)@(.*)', url)
         scheme,username,base = m.groups()
-        password = None
         if username is not None and ':' in username:
             username,password = username.split(':', 1)
-        return (scheme, username, password, base)
     else:
         m = re.search('^(\S+://)?(.*)', url)
         scheme,base = m.groups()
-        return (scheme, None, None, base)
+
+    if not scheme and ':' in base: #no scheme w/ ':' delimiter means SSH -- without means regular filepath
+        scheme = 'ssh://'
+    if not scheme:
+        base = url
+    elif ':' in base:
+        base,tgt = base.split(':', 1)
+    elif '/' in base:
+        base,tgt = base.split('/', 1)
+    return (scheme, username, password, base, tgt)
 
 MANIFEST_CACHE = {}
 def get_manifest(root:str, create:bool=True)-> typing.Union[Manifest, None]:
@@ -1096,10 +1173,7 @@ def remote(args, unknowns=None):
         if m:
             child = os.path.relpath(root, os.path.dirname(m.path))
             if child in m:
-                scheme,username,password,base_url = parse_url(unknowns[-1])
-                m[child].username = username
-                m[child].password = password
-                m[child].url = scheme + base_url if scheme is not None else base_url
+                m[child].set_url(unknowns[-1])
                 m.write()
 
 
@@ -1111,7 +1185,7 @@ def fetch(args, unknowns=None):
     if m and m.lock_server:
         obtain_server_lock(m.lock_server, w)
     else:
-        w([('git fetch ' + args_to_str(unknowns)).strip()])
+        w([('git fetch ' + args_to_str(unknowns)).strip()]) #FIXME: support --scheme option
 
 
 #ANCHOR: show()
@@ -1310,7 +1384,7 @@ def stash(args, unknowns=None):
         with open(stashes_file, 'w') as f:
             f.writelines(lines)
 
-PARSERS['stash'].add_argument('-m', '--message', dest='msg', action='store', default='', help='Stash message (for push operation)')
+PARSERS['stash'].add_argument('--message', '-m', dest='msg', action='store', default='', help='Stash message (for push operation)')
 
 
 # #ANCHOR: switch()
@@ -1517,14 +1591,16 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
                 try: 
                     if operation == 'Pulling':
                         try:
-                            out = _git(f'pull {args_to_str(unknowns)} {pull_src} {branch if pull_src else ""}', dst).strip()
+                            pull_src_url = pm[name].get_url(args.scheme) if not pull_src and pm is not None else pull_src
+                            out = _git(f'pull {args_to_str(unknowns)} {pull_src_url} {branch if pull_src else ""}', dst).strip()
                             debug(style(cmd_indenter(out), Style.GRAY, force=True))
                         except subprocess.CalledProcessError as e: #if we fail, report it and keep moving
                             out = e.output.decode('utf-8').strip()
                             error(cmd_indenter(out))
 
                     elif operation == 'Cloning':
-                        out = _git(f'clone {clone_src} .', dst).strip()
+                        clone_src_url = pm[name].get_url(args.scheme) if args.scheme and pm is not None else clone_src
+                        out = _git(f'clone {clone_src_url} .', dst).strip()
                         debug(style(cmd_indenter(out), Style.GRAY, force=True))
                         #Clean up remote URL(s) (FIXME: this diverges from the normal git behavior -- is it ok?)
                         if url != clone_src:
@@ -1537,7 +1613,10 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
                                 except subprocess.CalledProcessError as e:
                                     raise Exception(f"Failed to update remote url {remote} of {dst} due to the following reason(s):\n{e.output.decode('utf-8')}")
                             try: 
-                                _git(f'fetch', dst) #fetch from original remote to get back to same (relative) state as src of clone
+                                if pm and args.scheme:
+                                    _git(f'fetch {pm[name].get_url(args.scheme)}', dst)
+                                else:
+                                    _git(f'fetch', dst) #fetch from original remote to get back to same (relative) state as src of clone
                             except subprocess.CalledProcessError as e:
                                 raise Exception(f"Failed to clone {dst} due to the following reason(s):\n{e.output.decode('utf-8')}")
 
@@ -1612,8 +1691,8 @@ def pull(args, unknowns=None, root:str='', standalone:bool=True, utility_cmd_lev
 PARSERS['pull'].add_argument('src', metavar='src', type=str, nargs='?', help='Repository to pull from')
 PARSERS['pull'].add_argument('--target', '-T', dest='target', action='store', default=None, help='Specific repo to synchronize (suffix with / to include descendant repos)')
 PARSERS['pull'].add_argument('--local', '-L', dest='local', action='store', nargs='?', const=True, default=False, help='Copy the link sources directly rather than establishing symlinks for linked repos (does not apply to overlays)')
-PARSERS['pull'].add_argument('--force', '-F', dest='force', action='store_true', default=False, help='Force destruction of local changes for commit and link-based descendants and allow creation of broken symlinks')
-
+PARSERS['pull'].add_argument('--force', '-f', dest='force', action='store_true', default=False, help='Force destruction of local changes for commit and link-based descendants and allow creation of broken symlinks')
+PARSERS['pull'].add_argument('--scheme', '-S', dest='scheme', action='store', default=None, help='URL scheme to use (http, https, or ssh)')
 
 #ANCHOR: clone()
 @gitp_operation
@@ -1642,11 +1721,14 @@ def clone(args, unknowns=None):
         except:
             pass
     cli_args.append('--force')
+    if args.scheme:
+        cli_args.extend(['--scheme', args.scheme])
     pull(cli_args, root=dest_path, standalone=False)
     debug(f'\nSuccessfully cloned to {os.path.abspath(dest_path)}.')
 
 PARSERS['clone'].add_argument('src', metavar='src', type=str, help='Parent repo to clone')
 PARSERS['clone'].add_argument('dst', metavar='dst', type=str, help='Destination directory')
+PARSERS['clone'].add_argument('--scheme', '-S', dest='scheme', action='store', default=None, help='URL scheme to use (http, https, or ssh)')
 
 
 #ANCHOR: checkout()
@@ -1780,7 +1862,7 @@ def checkout(args, unknowns=None):
             GIT_FALLBACK = True
             return
 
-PARSERS['checkout'].add_argument('-f', '--force', dest='force', action='store_true', default=False, help='Force operation, discarding local changes in the process')
+PARSERS['checkout'].add_argument('--force', '-f', dest='force', action='store_true', default=False, help='Force operation, discarding local changes in the process')
 checkout_type_group = PARSERS['checkout'].add_mutually_exclusive_group()
 checkout_type_group.add_argument('--detach', dest='detach', action='store_true', default=False, help='Detaches HEAD at the specified ref')
 checkout_type_group.add_argument('--orphan', dest='orphan', action='store_true', default=False, help='Create and checkout a new orphan branch')
@@ -2300,7 +2382,7 @@ def sync(args, unknowns=None):
     Synchronize a repo's state with its manifest.
     '''
     
-    def do_sync(tgts:typing.List[str], parent_m:Manifest, overlays:dict=None, mismatches:dict=None, top_root:str=None, level:int=0):
+    def do_sync(tgts:typing.List[str], parent_m:Manifest, repo:Manifest.Repo=None, overlays:dict=None, mismatches:dict=None, top_root:str=None, level:int=0):
         indent      = ''.join([' ' for _ in range(level)]) + '∟ ' if level else ''
         cmd_indenter = get_cmd_indenter(level + 2)
 
@@ -2322,7 +2404,10 @@ def sync(args, unknowns=None):
                 #Child doesn't exist -- pull it
                 if state == RepoState.NONEXISTENT and not parent_m[child].link:
                     debug(f'{indent}Syncing {style(tgt, Style.BOLD)} (cloning)')
-                    pull(['--target', child_qualified], standalone=False, utility_cmd_level=level)
+                    cli_args = ['--target', child_qualified]
+                    if args.scheme:
+                        cli_args.extend(['--scheme', args.scheme])
+                        pull(cli_args, standalone=False, utility_cmd_level=level)
                 #Child exists but isn't aligned; align it
                 elif state == RepoState.UNALIGNED or parent_m[child].link:
                     #Relink
@@ -2343,7 +2428,10 @@ def sync(args, unknowns=None):
                     else:
                         debug(f'{indent}Syncing {style(tgt, Style.BOLD)} (checking out {parent_m[child].commit or parent_m[child].branch})')
                         try:
-                            out = _git('fetch', tgt).strip()
+                            if repo and args.scheme:
+                                out = _git(f'fetch {repo.get_url(args.scheme)}', tgt).strip()
+                            else:
+                                out = _git('fetch', tgt).strip()
                             out = _git(f'checkout {parent_m[child].commit or parent_m[child].branch}', tgt).strip()
                             debug(style(cmd_indenter(out), Style.GRAY, force=True))
                         except subprocess.CalledProcessError as e:
@@ -2357,7 +2445,7 @@ def sync(args, unknowns=None):
             m = get_manifest(tgt, create=False)
             if m:
                 for gchild in m:
-                    do_sync([os.path.join(tgt, gchild)], parent_m=m, overlays=overlays, mismatches=mismatches, top_root=top_root, level=level+2)
+                    do_sync([os.path.join(tgt, gchild)], parent_m=m, repo=m[gchild], overlays=overlays, mismatches=mismatches, top_root=top_root, level=level+2)
 
     #If nothing is specified, target all children of repo in cwd
     repo_root = get_repo_root()
@@ -2385,7 +2473,8 @@ def sync(args, unknowns=None):
     #Apply overlays
     apply_overlays(repo_root, overlays, args.tgt, args.force)
 
-PARSERS['sync'].add_argument('-f', '--force', dest='force', action='store_true', default=False, help='Force operation, discarding local changes in the process')
+PARSERS['sync'].add_argument('--force', '-f', dest='force', action='store_true', default=False, help='Force operation, discarding local changes in the process')
+PARSERS['sync'].add_argument('--scheme', '-S', dest='scheme', action='store', default=None, help='URL scheme to use (http, https, or ssh)')
 PARSERS['sync'].add_argument('tgt', metavar='tgt', nargs='*', type=str, help='Child repos to synchronize (specify none to synchronize all children)')
 
 
@@ -2449,10 +2538,7 @@ def new(args, unknowns=None):
     new_entry.link          = args.link
     new_entry.link_filter   = args.link_filter
     new_entry.link_newest   = args.link_newest
-    scheme,username,password,base_url = parse_url(args.url)
-    new_entry.username = username
-    new_entry.password = password
-    new_entry.url = scheme + base_url if scheme is not None else base_url
+    new_entry.set_url(args.url)
     m[new_child] = new_entry
     m.write()
     gitignore_add(root, new_child)
@@ -2610,8 +2696,8 @@ def unlink(args, unknowns=None):
     else:
         debug(f"Unlinked {args.tgt}")
 
-PARSERS['unlink'].add_argument('tgt', metavar='tgt', type=str, action='store', default=None, help='Target repo to remove link for')
 PARSERS['unlink'].add_argument('--overlay', '-O', dest='link_overlay', action='store_true', default=False, help='Remove an overlay (no change to child repo manifest)')
+PARSERS['unlink'].add_argument('tgt', metavar='tgt', type=str, action='store', default=None, help='Target repo to remove link for')
 
 
 #ANCHOR: server()
