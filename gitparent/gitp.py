@@ -67,8 +67,10 @@ class Manifest:
     class Repo:
         ''' Internal representation of a repo entry in a `.gitp_manifest` file. ''' 
         _repo_attrs = ['url', 'username', 'password', 'branch', 'commit', 'link', 'link_newest', 'link_filter', 'type']
-        def __init__(self):
+        def __init__(self, abs_path:str):
             self._parent_manifest = None
+            self._abs_path = abs_path
+            self._manifest = get_manifest(self._abs_path, create=False)           
             for attr in self._repo_attrs:
                 self.__dict__['_' + attr] = None
 
@@ -180,8 +182,12 @@ class Manifest:
             if url_tgt:
                 ans += ':' + url_tgt            
             return ans
+        
+        def fetch(self, scheme:str, options:str=''):
+            ''' Fetch the remote for this repo '''
+            out = _git(f'fetch {options} {self.get_url(scheme)}', self._abs_path)
 
-    def __init__(self, name:str, path:str=None, raw:typing.Union[dict,str]=None):
+    def __init__(self, name:str, path:str, raw:typing.Union[dict,str]=None):
         '''
         Args:
             name: name of the associated gitp repo
@@ -302,7 +308,7 @@ class Manifest:
                     child = child[:-1]
                 if child in self.repos:
                     raise Exception(f"Found duplicate repo entry '{child}'")
-                new_entry = Manifest.Repo()
+                new_entry = Manifest.Repo(os.path.join(self.path, child))
                 self.repos[child] = new_entry
                 new_entry._parent_manifest = self
                 for key in Manifest.Repo._repo_attrs:
@@ -1833,7 +1839,7 @@ def checkout(args, unknowns=None):
             if child in m.repos:
                 #Read manifest file from ref
                 alt_m_content = read_manifest_from_ref(src_ref)
-                alt_m = Manifest('alternate', raw=alt_m_content)
+                alt_m = Manifest('alternate', m.path, raw=alt_m_content)
                 if not args.force:
                     local_untracked = check_for_changes(os.path.join(repo_root, child), ignore_committed=True, ignore_untracked=True)
                     if local_untracked:
@@ -2532,7 +2538,7 @@ def new(args, unknowns=None):
         raise Exception(f"Attempted to add a child repo to a linked repo {root} -- run `gitp pull {root} --local` to convert this into a physical repo before modifying it")
 
     #Register the new child repo by updating the manifest and .gitignore
-    new_entry = Manifest.Repo()
+    new_entry = Manifest.Repo(os.path.join(m.path, new_child))
     new_entry.commit        = args.commit
     new_entry.branch        = args.branch
     new_entry.link          = args.link
@@ -2615,7 +2621,7 @@ def link(args, unknowns=None):
     #We create a new entry for overlay
     if args.link_overlay:
         root_m = get_manifest(root)
-        root_m[overlay_name] = Manifest.Repo()
+        root_m[overlay_name] = Manifest.Repo(os.path.join(root_m.path, overlay_name))
         root_m[overlay_name].type = 'overlay'
         root_m[overlay_name].link = args.link
         root_m[overlay_name].link_newest = args.link_newest
